@@ -17,9 +17,40 @@
 #define KEY_LALT 0x38
 #define KEY_C 0x2E
 #define KEY_ENTER 0x1C
+#define KEY_BACKSPACE 0x0E
+#define KEY_SPACE 0x39
+#define KEY_ESC 0x01
+#define KEY_TAB 0x0F
+
+// Keyboard scan code to ASCII mapping
+char scancode_to_ascii(uint8_t scan) {
+    static const char scancode_map[] = {
+        0,   0,  '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0,   0,   // 0x00-0x0F
+        'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', 0,   0,  'a', 's', // 0x10-0x1F
+        'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'',0,   0,  '\\','z', 'x', 'c', 'v', // 0x20-0x2F
+        'b', 'n', 'm', ',', '.', '/', 0,   0,   0,  ' '                              // 0x30-0x39
+    };
+    
+    if (scan < sizeof(scancode_map)) {
+        return scancode_map[scan];
+    }
+    return 0;
+}
 
 // Forward declarations
 void handle_click(void);
+void process_command(void);
+
+// Terminal state
+#define TERM_BUFFER_SIZE 256
+#define TERM_OUTPUT_LINES 10
+static char terminal_buffer[TERM_BUFFER_SIZE];
+static int terminal_cursor = 0;
+static uint8_t typing_mode = 0; // 1 = typing mode active
+static char terminal_output[TERM_OUTPUT_LINES][40];
+static int output_line_count = 0;
+static uint32_t char_count = 0;
+static uint32_t start_time = 0;
 
 // Double buffer for flicker-free rendering
 static uint8_t back_buffer[VGA_WIDTH * VGA_HEIGHT];
@@ -32,6 +63,107 @@ static uint8_t terminal_open = 0;
 static uint8_t start_menu_open = 0;
 static int last_clicked_icon = -1; // -1 = none, 0 = start, 1 = terminal, 2 = files, 3 = settings
 static uint8_t click_frame_count = 0;
+
+// Simple string functions
+int str_len(const char* str) {
+    int len = 0;
+    while (str[len]) len++;
+    return len;
+}
+
+int str_cmp(const char* s1, const char* s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+void str_cpy(char* dest, const char* src) {
+    while (*src) {
+        *dest++ = *src++;
+    }
+    *dest = 0;
+}
+
+int str_starts_with(const char* str, const char* prefix) {
+    while (*prefix) {
+        if (*str++ != *prefix++) return 0;
+    }
+    return 1;
+}
+
+// Add line to terminal output
+void add_output_line(const char* line) {
+    if (output_line_count < TERM_OUTPUT_LINES) {
+        str_cpy(terminal_output[output_line_count], line);
+        output_line_count++;
+    } else {
+        // Scroll up
+        for (int i = 0; i < TERM_OUTPUT_LINES - 1; i++) {
+            str_cpy(terminal_output[i], terminal_output[i + 1]);
+        }
+        str_cpy(terminal_output[TERM_OUTPUT_LINES - 1], line);
+    }
+}
+
+// Process terminal command
+void process_command(void) {
+    // Add command to output
+    char cmd_line[42];
+    str_cpy(cmd_line, "> ");
+    for (int i = 0; i < terminal_cursor && i < 38; i++) {
+        cmd_line[i + 2] = terminal_buffer[i];
+    }
+    cmd_line[terminal_cursor + 2] = 0;
+    add_output_line(cmd_line);
+    
+    // Process commands
+    if (str_cmp(terminal_buffer, "help") == 0) {
+        add_output_line("commands: ls dir cd mkdir");
+        add_output_line("clear wpm help");
+    } else if (str_cmp(terminal_buffer, "ls") == 0 || str_cmp(terminal_buffer, "dir") == 0) {
+        add_output_line("documents/  pictures/");
+        add_output_line("downloads/  system/");
+    } else if (str_starts_with(terminal_buffer, "ls ")) {
+        add_output_line("file1.txt  file2.txt");
+        add_output_line("readme.md  config.sys");
+    } else if (str_starts_with(terminal_buffer, "cd ")) {
+        add_output_line("changed directory");
+    } else if (str_starts_with(terminal_buffer, "mkdir ")) {
+        add_output_line("directory created");
+    } else if (str_cmp(terminal_buffer, "clear") == 0) {
+        output_line_count = 0;
+        char_count = 0;
+        start_time = 0;
+    } else if (str_cmp(terminal_buffer, "wpm") == 0) {
+        // Calculate WPM (words per minute)
+        // Assuming 5 chars = 1 word
+        uint32_t words = char_count / 5;
+        char wpm_str[40];
+        str_cpy(wpm_str, "chars typed: ");
+        // Simple number to string
+        int chars = char_count;
+        int pos = str_len(wpm_str);
+        if (chars == 0) {
+            wpm_str[pos++] = '0';
+        } else {
+            char temp[10];
+            int i = 0;
+            while (chars > 0) {
+                temp[i++] = '0' + (chars % 10);
+                chars /= 10;
+            }
+            while (i > 0) {
+                wpm_str[pos++] = temp[--i];
+            }
+        }
+        wpm_str[pos] = 0;
+        add_output_line(wpm_str);
+    } else if (terminal_cursor > 0) {
+        add_output_line("command not found");
+    }
+}
 
 // Port I/O
 static inline void outb(uint16_t port, uint8_t val) {
@@ -65,7 +197,8 @@ void draw_char(int x, int y, char c, uint8_t color) {
     for (int j = 0; j < 8; j++) {
         uint8_t line = font_data[j];
         for (int i = 0; i < 8; i++) {
-            if (line & (0x80 >> i)) {
+            // Check bit from left to right (MSB first)
+            if (line & (1 << (7 - i))) {
                 put_pixel(x + i, y + j, color);
             }
         }
@@ -310,20 +443,23 @@ void draw_terminal(void) {
     draw_rect(win_x, win_y + 19, win_w, 1, 3);
     
     // Window title
-    draw_string(win_x + 10, win_y + 6, "Terminal", 1);
+    draw_string(win_x + 10, win_y + 6, "terminal", 1);
+    
+    // Typing mode indicator
+    if (typing_mode) {
+        draw_string(win_x + 100, win_y + 6, "[typing]", 6);
+    }
     
     // Window control buttons (right to left: close, maximize, minimize)
     
     // Minimize button (YELLOW background, black underscore)
     draw_rect(win_x + win_w - 54, win_y + 3, 14, 14, 11);
     draw_rect_outline(win_x + win_w - 54, win_y + 3, 14, 14, 0);
-    // Draw underscore at bottom
     draw_rect(win_x + win_w - 51, win_y + 12, 8, 2, 0);
     
     // Maximize button (GREEN background, black caret)
     draw_rect(win_x + win_w - 36, win_y + 3, 14, 14, 6);
     draw_rect_outline(win_x + win_w - 36, win_y + 3, 14, 14, 0);
-    // Draw up arrow
     put_pixel(win_x + win_w - 29, win_y + 10, 0);
     put_pixel(win_x + win_w - 30, win_y + 11, 0);
     put_pixel(win_x + win_w - 28, win_y + 11, 0);
@@ -333,7 +469,6 @@ void draw_terminal(void) {
     // Close button (RED background, white X)
     draw_rect(win_x + win_w - 18, win_y + 3, 14, 14, 5);
     draw_rect_outline(win_x + win_w - 18, win_y + 3, 14, 14, 0);
-    // Draw X
     for (int i = 0; i < 8; i++) {
         put_pixel(win_x + win_w - 14 + i, win_y + 7 + i, 1);
         put_pixel(win_x + win_w - 14 + i, win_y + 13 - i, 1);
@@ -343,16 +478,36 @@ void draw_terminal(void) {
     draw_rect_outline(win_x, win_y, win_w, win_h, 3);
     
     // Terminal content area
-    int content_y = win_y + 23;
+    int content_y = win_y + 25;
     
-    // Terminal prompt
-    draw_string(win_x + 8, content_y + 5, "C:/home>", 6);
+    // Draw output history (scrolling)
+    int start_line = output_line_count > 7 ? output_line_count - 7 : 0;
+    for (int i = start_line; i < output_line_count; i++) {
+        draw_string(win_x + 8, content_y + (i - start_line) * 10, terminal_output[i], 3);
+    }
+    
+    // Current command line
+    int cmd_y = content_y + ((output_line_count < 7 ? output_line_count : 7) * 10);
+    draw_string(win_x + 8, cmd_y, "c:/home>", 6);
+    
+    // Draw terminal input buffer
+    int buffer_x = win_x + 72;
+    for (int i = 0; i < terminal_cursor && i < 20; i++) {
+        draw_char(buffer_x + i * 8, cmd_y, terminal_buffer[i], 6);
+    }
     
     // Blinking cursor
     static uint8_t cursor_blink = 0;
     cursor_blink = (cursor_blink + 1) % 60;
-    if (cursor_blink < 30) {
-        draw_rect(win_x + 72, content_y + 5, 6, 8, 6);
+    if (cursor_blink < 30 && typing_mode) {
+        draw_rect(buffer_x + terminal_cursor * 8, cmd_y, 6, 8, 6);
+    }
+    
+    // Help text at bottom
+    if (!typing_mode) {
+        draw_string(win_x + 8, win_y + win_h - 15, "tab:type esc:exit", 3);
+    } else {
+        draw_string(win_x + 8, win_y + win_h - 15, "enter:run esc:exit", 3);
     }
 }
 
@@ -378,6 +533,44 @@ void draw_cursor(int x, int y) {
         "   X       "
     };
     
+    // Determine border color based on mode
+    uint8_t border_color = 0;
+    int border_thickness = 2;
+    
+    if (click_frame_count > 0) {
+        // Red border when clicking
+        border_color = 5;
+    } else if (alt_pressed) {
+        // White/light gray border when Alt is pressed (ready to click)
+        border_color = 1;
+    } else if (typing_mode) {
+        // No border in typing mode
+        border_color = 0;
+        border_thickness = 0;
+    }
+    
+    // Draw border if needed
+    if (border_thickness > 0 && border_color != 0) {
+        for (int t = 0; t < border_thickness; t++) {
+            // Top border
+            for (int i = -t; i < 12 + t; i++) {
+                put_pixel(x + i - 1, y - 1 - t, border_color);
+            }
+            // Bottom border
+            for (int i = -t; i < 12 + t; i++) {
+                put_pixel(x + i - 1, y + 16 + t, border_color);
+            }
+            // Left border
+            for (int j = -t; j < 17 + t; j++) {
+                put_pixel(x - 1 - t, y + j - 1, border_color);
+            }
+            // Right border
+            for (int j = -t; j < 17 + t; j++) {
+                put_pixel(x + 11 + t, y + j - 1, border_color);
+            }
+        }
+    }
+    
     // Draw shadow first (offset by 1,1)
     for (int j = 0; j < 16; j++) {
         for (int i = 0; i < 11; i++) {
@@ -395,30 +588,6 @@ void draw_cursor(int x, int y) {
             } else if (cursor[j][i] == '.') {
                 put_pixel(x + i, y + j, 0); // Black fill
             }
-        }
-    }
-    
-    // Draw red border when Alt is pressed (click mode indicator)
-    if (alt_pressed) {
-        // Top border
-        for (int i = 0; i < 12; i++) {
-            put_pixel(x + i - 1, y - 1, 5);
-            put_pixel(x + i - 1, y - 2, 5);
-        }
-        // Bottom border
-        for (int i = 0; i < 12; i++) {
-            put_pixel(x + i - 1, y + 16, 5);
-            put_pixel(x + i - 1, y + 17, 5);
-        }
-        // Left border
-        for (int j = 0; j < 18; j++) {
-            put_pixel(x - 1, y + j - 1, 5);
-            put_pixel(x - 2, y + j - 1, 5);
-        }
-        // Right border
-        for (int j = 0; j < 18; j++) {
-            put_pixel(x + 11, y + j - 1, 5);
-            put_pixel(x + 12, y + j - 1, 5);
         }
     }
 }
@@ -571,42 +740,66 @@ void handle_keyboard(void) {
             ctrl_pressed = 1;
         } else if (scan == KEY_LALT) {
             alt_pressed = 1;
+        } else if (scan == KEY_TAB && terminal_open && !typing_mode) {
+            // Tab enters typing mode
+            typing_mode = 1;
+            if (start_time == 0) start_time = 1; // Start WPM timer
+        } else if (scan == KEY_ESC && typing_mode) {
+            // ESC exits typing mode
+            typing_mode = 0;
+        } else if (typing_mode) {
+            // TYPING MODE - all keys type in terminal
+            if (scan == KEY_BACKSPACE) {
+                if (terminal_cursor > 0) {
+                    terminal_cursor--;
+                    terminal_buffer[terminal_cursor] = 0;
+                }
+            } else if (scan == KEY_ENTER) {
+                // Run command
+                process_command();
+                
+                // Clear input buffer
+                terminal_cursor = 0;
+                for (int i = 0; i < TERM_BUFFER_SIZE; i++) {
+                    terminal_buffer[i] = 0;
+                }
+            } else {
+                // Type character
+                char c = scancode_to_ascii(scan);
+                if (c != 0 && terminal_cursor < TERM_BUFFER_SIZE - 1 && terminal_cursor < 20) {
+                    terminal_buffer[terminal_cursor] = c;
+                    terminal_cursor++;
+                    char_count++; // Track for WPM
+                }
+            }
         } else if (scan == KEY_ENTER) {
-            // Enter key triggers click when hovering over something
+            // Enter key clicks when not in typing mode
             handle_click();
         } else if (scan == KEY_C && alt_pressed) {
             // Alt+C to click
             handle_click();
         } else if (scan == KEY_UP) {
             if (ctrl_pressed) {
-                // Ctrl + Up: move 1 pixel
                 if (mouse_y > 0) mouse_y--;
             } else {
-                // Up alone: move 5 pixels
                 if (mouse_y > 4) mouse_y -= 5;
             }
         } else if (scan == KEY_DOWN) {
             if (ctrl_pressed) {
-                // Ctrl + Down: move 1 pixel
                 if (mouse_y < VGA_HEIGHT - 16) mouse_y++;
             } else {
-                // Down alone: move 5 pixels
                 if (mouse_y < VGA_HEIGHT - 21) mouse_y += 5;
             }
         } else if (scan == KEY_LEFT) {
             if (ctrl_pressed) {
-                // Ctrl + Left: move 1 pixel
                 if (mouse_x > 0) mouse_x--;
             } else {
-                // Left alone: move 5 pixels
                 if (mouse_x > 4) mouse_x -= 5;
             }
         } else if (scan == KEY_RIGHT) {
             if (ctrl_pressed) {
-                // Ctrl + Right: move 1 pixel
                 if (mouse_x < VGA_WIDTH - 11) mouse_x++;
             } else {
-                // Right alone: move 5 pixels
                 if (mouse_x < VGA_WIDTH - 16) mouse_x += 5;
             }
         }
@@ -645,6 +838,23 @@ void window_manager_init(void) {
     start_menu_open = 0;
     last_clicked_icon = -1;
     click_frame_count = 0;
+    typing_mode = 0;
+    output_line_count = 0;
+    char_count = 0;
+    start_time = 0;
+    
+    // Clear terminal buffer
+    terminal_cursor = 0;
+    for (int i = 0; i < TERM_BUFFER_SIZE; i++) {
+        terminal_buffer[i] = 0;
+    }
+    
+    // Clear output
+    for (int i = 0; i < TERM_OUTPUT_LINES; i++) {
+        for (int j = 0; j < 40; j++) {
+            terminal_output[i][j] = 0;
+        }
+    }
     
     // Clear back buffer
     for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
@@ -660,6 +870,7 @@ void window_manager_run(void) {
     uint8_t needs_redraw = 0;
     uint8_t frame_count = 0;
     static uint8_t last_alt_state = 0;
+    static uint8_t last_typing_state = 0;
     
     // Main event loop
     while (1) {
@@ -673,6 +884,12 @@ void window_manager_run(void) {
         // Redraw if alt state changed (for cursor border)
         if (alt_pressed != last_alt_state) {
             last_alt_state = alt_pressed;
+            needs_redraw = 1;
+        }
+        
+        // Redraw if typing mode changed
+        if (typing_mode != last_typing_state) {
+            last_typing_state = typing_mode;
             needs_redraw = 1;
         }
         
