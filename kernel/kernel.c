@@ -196,9 +196,16 @@ void draw_char(int x, int y, char c, uint8_t color) {
     
     for (int j = 0; j < 8; j++) {
         uint8_t line = font_data[j];
+        // Reverse the bit order
+        uint8_t reversed = 0;
+        for (int b = 0; b < 8; b++) {
+            if (line & (1 << b)) {
+                reversed |= (1 << (7 - b));
+            }
+        }
+        
         for (int i = 0; i < 8; i++) {
-            // Check bit from left to right (MSB first)
-            if (line & (1 << (7 - i))) {
+            if (reversed & (1 << (7 - i))) {
                 put_pixel(x + i, y + j, color);
             }
         }
@@ -704,6 +711,9 @@ void handle_click(void) {
             mouse_y >= menu_y + 30 && mouse_y <= menu_y + 55) {
             terminal_open = 1;
             start_menu_open = 0;
+            // Auto-enter typing mode
+            typing_mode = 1;
+            if (start_time == 0) start_time = 1;
             return;
         }
         
