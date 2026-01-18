@@ -1,71 +1,82 @@
-; boot.asm - Bootloader for CalculusOS with Multiboot support
-[BITS 32]
-[EXTERN kernel_main]
-[EXTERN call_constructors]
-[GLOBAL start]
+; boot.asm - Calculus OS Bootloader
 
-; Multiboot header constants
-MULTIBOOT_MAGIC equ 0x1BADB002
-MULTIBOOT_PAGE_ALIGN equ 1<<0
-MULTIBOOT_MEMORY_INFO equ 1<<1
-MULTIBOOT_VIDEO_MODE equ 1<<2
-MULTIBOOT_FLAGS equ MULTIBOOT_PAGE_ALIGN | MULTIBOOT_MEMORY_INFO | MULTIBOOT_VIDEO_MODE
-MULTIBOOT_CHECKSUM equ -(MULTIBOOT_MAGIC + MULTIBOOT_FLAGS)
+MBOOT_PAGE_ALIGN    equ 1<<0
+MBOOT_MEM_INFO      equ 1<<1
+MBOOT_HEADER_MAGIC  equ 0x1BADB002
+MBOOT_HEADER_FLAGS  equ MBOOT_PAGE_ALIGN | MBOOT_MEM_INFO
+MBOOT_CHECKSUM      equ -(MBOOT_HEADER_MAGIC + MBOOT_HEADER_FLAGS)
+
+[BITS 32]
 
 section .multiboot
-    align 4
-multiboot_header:
-    dd MULTIBOOT_MAGIC
-    dd MULTIBOOT_FLAGS
-    dd MULTIBOOT_CHECKSUM
-    
-    ; address fields (unused since we use ELF)
-    dd 0
-    dd 0
-    dd 0
-    dd 0
-    dd 0
-    
-    ; video mode fields
-    dd 0    ; mode_type: 0 = linear graphics
-    dd 320  ; width
-    dd 200  ; height
-    dd 8    ; depth (bits per pixel)
+align 4
+    dd MBOOT_HEADER_MAGIC
+    dd MBOOT_HEADER_FLAGS
+    dd MBOOT_CHECKSUM
 
 section .bss
-    align 16
+align 16
 stack_bottom:
-    resb 16384 ; 16 KB stack
+    resb 16384
 stack_top:
 
 section .text
-start:
-    ; Disable interrupts
-    cli
-    
-    ; Set up stack
+global _start
+extern kernel_main
+
+_start:
     mov esp, stack_top
+    mov ebp, esp
     
-    ; Reset EFLAGS
+    push ebx
+    push eax
+    
     push 0
     popf
     
-    ; Push multiboot info (they're already in eax and ebx from GRUB)
-    ; eax contains the magic number
-    ; ebx contains the address of multiboot info structure
-    push ebx    ; multiboot info pointer
-    push eax    ; multiboot magic number
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
     
-    ; Call global constructors
-    call call_constructors
+    in al, 0x92
+    or al, 2
+    out 0x92, al
     
-    ; Call kernel main with multiboot parameters
+    lgdt [gdt_descriptor]
+    
     call kernel_main
     
-    ; If kernel returns, halt
     cli
 .hang:
     hlt
     jmp .hang
+
+section .data
+align 8
+gdt_start:
+    dq 0x0000000000000000
+    
+    dw 0xFFFF
+    dw 0x0000
+    db 0x00
+    db 10011010b
+    db 11001111b
+    db 0x00
+    
+    dw 0xFFFF
+    dw 0x0000
+    db 0x00
+    db 10010010b
+    db 11001111b
+    db 0x00
+
+gdt_end:
+
+gdt_descriptor:
+    dw gdt_end - gdt_start - 1
+    dd gdt_start
 
 section .note.GNU-stack noalloc noexec nowrite progbits
