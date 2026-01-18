@@ -1,39 +1,43 @@
-/* linker.ld - Linker script for CalculusOS */
+/* linker.ld - Linker script for Calculus OS */
 
-ENTRY(start)
+ENTRY(_start)
 
 SECTIONS
 {
-    . = 1M;
-
-    .boot :
+    /* Kernel starts at 1MB physical address */
+    . = 0x00100000;
+    
+    /* Multiboot header must be in first 8KB */
+    .multiboot : ALIGN(4K)
     {
         *(.multiboot)
     }
-
-    .text ALIGN(4K) : AT(ADDR(.text))
+    
+    /* Read-only data */
+    .rodata : ALIGN(4K)
+    {
+        *(.rodata*)
+    }
+    
+    /* Code section */
+    .text : ALIGN(4K)
     {
         *(.text)
     }
-
-    .rodata ALIGN(4K) : AT(ADDR(.rodata))
+    
+    /* Initialized data */
+    .data : ALIGN(4K)
     {
-        *(.rodata)
-    }
-
-    .data ALIGN(4K) : AT(ADDR(.data))
-    {
-        start_ctors = .;
-        KEEP(*(.init_array));
-        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)));
-        end_ctors = .;
-
         *(.data)
     }
-
-    .bss ALIGN(4K) : AT(ADDR(.bss))
+    
+    /* Uninitialized data (BSS) */
+    .bss : ALIGN(4K)
     {
         *(COMMON)
         *(.bss)
     }
+    
+    /* End of kernel marker */
+    _kernel_end = .;
 }
