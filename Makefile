@@ -1,57 +1,90 @@
-# Makefile for CalculusOS
+# Makefile for Calculus OS
 
-# Compiler and tools
-AS = nasm
+# Compiler and linker settings
 CC = gcc
+AS = nasm
 LD = ld
 
 # Flags
+CFLAGS = -m32 -nostdlib -nostdinc -fno-builtin -fno-stack-protector \
+         -nostartfiles -nodefaultlibs -Wall -Wextra -Werror -c
+LDFLAGS = -m elf_i386 -T linker.ld
 ASFLAGS = -f elf32
-CFLAGS = -m32 -c -ffreestanding -O2 -Wall -Wextra -nostdlib -fno-builtin -nostartfiles -nodefaultlibs
-LDFLAGS = -m elf_i386 -T linker.ld -nostdlib
+
+# Directories
+KERNEL_DIR = kernel
+BUILD_DIR = build
 
 # Source files
-ASM_SOURCES = boot.asm
-C_SOURCES = kernel/kernel.c kernel/window.c kernel/font.c
+BOOT_ASM = boot.asm
+KERNEL_C = kernel.c
+WINDOW_C = $(KERNEL_DIR)/window.c
 
 # Object files
-ASM_OBJECTS = $(ASM_SOURCES:.asm=.o)
-C_OBJECTS = $(C_SOURCES:.c=.o)
-OBJECTS = $(ASM_OBJECTS) $(C_OBJECTS)
+BOOT_OBJ = $(BUILD_DIR)/boot.o
+KERNEL_OBJ = $(BUILD_DIR)/kernel.o
+WINDOW_OBJ = $(BUILD_DIR)/window.o
 
 # Output
-KERNEL = kernel.bin
-ISO = CalculusOS.iso
+OS_BIN = $(BUILD_DIR)/calculus.bin
+OS_ISO = $(BUILD_DIR)/calculus.iso
 
-# Targets
 .PHONY: all clean run iso
 
-all: $(KERNEL)
+all: $(OS_BIN)
 
-$(KERNEL): $(OBJECTS)
-	$(LD) $(LDFLAGS) -o $@ $(OBJECTS)
+# Create build directory
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
 
-%.o: %.asm
+# Assemble bootloader
+$(BOOT_OBJ): $(BOOT_ASM) | $(BUILD_DIR)
 	$(AS) $(ASFLAGS) $< -o $@
 
-%.o: %.c
+# Compile kernel
+$(KERNEL_OBJ): $(KERNEL_C) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< -o $@
 
-iso: $(KERNEL)
-	mkdir -p isodir/boot/grub
-	cp $(KERNEL) isodir/boot/
-	cp grub/grub.cfg isodir/boot/grub/
-	grub-mkrescue -o $(ISO) isodir
+# Compile window manager
+$(WINDOW_OBJ): $(WINDOW_C) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $< -o $@
 
-run: iso
-	qemu-system-i386 -cdrom $(ISO)
+# Link everything
+$(OS_BIN): $(BOOT_OBJ) $(KERNEL_OBJ) $(WINDOW_OBJ)
+	$(LD) $(LDFLAGS) -o $@ $^
 
+# Create bootable ISO (requires grub-mkrescue)
+iso: $(OS_BIN)
+	mkdir -p $(BUILD_DIR)/iso/boot/grub
+	cp $(OS_BIN) $(BUILD_DIR)/iso/boot/calculus.bin
+	echo 'set timeout=0' > $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	echo 'set default=0' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	echo '' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	echo 'menuentry "Calculus OS" {' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	echo '    multiboot /boot/calculus.bin' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	echo '    boot' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	echo '}' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	grub-mkrescue -o $(OS_ISO) $(BUILD_DIR)/iso
+
+# Run in QEMU
+run: $(OS_BIN)
+	qemu-system-i386 -kernel $(OS_BIN) -m 512M -vga std
+
+# Run ISO in QEMU
+run-iso: iso
+	qemu-system-i386 -cdrom $(OS_ISO) -m 512M -vga std
+
+# Clean build files
 clean:
-	rm -f $(OBJECTS) $(KERNEL) $(ISO)
-	rm -rf isodir
+	rm -rf $(BUILD_DIR)
 
-# Dependencies
-boot.o: boot.asm
-kernel/kernel.o: kernel/kernel.c
-kernel/window.o: kernel/window.c kernel/font.h
-kernel/font.o: kernel/font.c kernel/font.h
+# Help
+help:
+	@echo "Calculus OS Build System"
+	@echo "========================"
+	@echo "make          - Build the OS kernel"
+	@echo "make iso      - Create bootable ISO"
+	@echo "make run      - Run in QEMU (kernel only)"
+	@echo "make run-iso  - Run ISO in QEMU"
+	@echo "make clean    - Remove build files"
+	@echo "make help     - Show this help message"
